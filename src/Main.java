@@ -7,18 +7,15 @@ import java.io.IOException;
 import java.io.BufferedReader;
 import java.io.DataInputStream;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.FileReader;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.io.OutputStreamWriter;
 import java.io.PrintStream;
-import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -28,60 +25,59 @@ import java.util.logging.Logger;
  */
 public class Main{
 
-    public static ServerSocket server;
-    public static boolean server_state = false;
     /**
      * @param args the command line arguments
+     * @throws java.io.IOException
      */
+    private static String FILE_PATH;
+    private static BufferedReader BR;
+    private static String LINE;
+    private static String HOST = "";
+    private static int PORT = 1234;
+    private static int MAX_PROC_COUNT = 1;
+    private static final Map<Integer, Integer[]> NEIGHBOUR_LIST = new HashMap<>();
+    
+    
     public static void main(String[] args) throws IOException {
         
-        /*
-         * Open a file handler to read from config file named "dsConfig".
-         * Read first 2 lines to get the coordinator host and max number of processes.
-         * Get port number from commandline argument[1].
-         */
-        String file_path = new File("").getAbsolutePath();
-        BufferedReader br = new BufferedReader(new FileReader(file_path+"/res/dsConfig"));
-        String line, HOST = "";
-        int MAX_PROC_COUNT = 1;
-        int port;
-        while((line = br.readLine()) != null) {
-            if (line.startsWith("COORDINATOR")) {
-                HOST = line.split("COORDINATOR")[1].trim();
+        FILE_PATH = new File("").getAbsolutePath();
+        BR = new BufferedReader(new FileReader(FILE_PATH+"/res/dsConfig"));
+        String nb_line;
+        String[] processList;
+        Integer[] processNeighbours;
+        while((LINE = BR.readLine()) != null) {
+            if (LINE.startsWith("COORDINATOR")) {
+                HOST = LINE.split("COORDINATOR")[1].trim();
             }
-            if (line.startsWith("NUMBER")){
-                MAX_PROC_COUNT = Integer.parseInt(line.split("NUMBER OF PROCESSES")[1].trim());
+            if (LINE.startsWith("NUMBER")){
+                MAX_PROC_COUNT = Integer.parseInt(LINE.split("NUMBER OF PROCESSES")[1].trim());
+                
             }
-        }
-        /*
-         * If the number of arguments are equal to 2.
-         * then the first is the option to run the coordinator,
-         * and the second one is the port number.
-         * Then start the COORDINATOR class.
-         */
-        if (args.length == 2) {
             
-            if (args[0].equalsIgnoreCase("-c")) {
-                port = Integer.parseInt(args[1]);
-                System.out.println("Starting the COORDINATOR at HOST="+HOST);
-                new COORDINATOR(port, MAX_PROC_COUNT).start();
+            if (LINE.startsWith("NEIGHBOUR")) {
+                while((nb_line = BR.readLine())!=null) {
+                    processList = nb_line.split(" ");
+                    processNeighbours = new Integer[processList.length];
+                    for(int i=1;i<processList.length;i++) {
+                        processNeighbours[i] = Integer.parseInt(processList[i]);
+                    }
+                    NEIGHBOUR_LIST.put(Integer.parseInt(processList[0]),processNeighbours);
+                    processNeighbours = null;
+                }
             }
         }
-        /*
-         * Otherwise if there is only argument, 
-         * then that argument is the port number.
-         * With this info start the PROCESS class.
-         */
-        else if (args.length == 1) {
-            System.out.println("Starting PROCESS.");
-            port = Integer.parseInt(args[0]);
-            System.out.println("Connecting to COORDINATOR on PORT="+port);
-            new PROCESS(HOST, port).init();
+
+        if (args.length == 1) {
+        
+            if(args[0].equalsIgnoreCase("-c")) {
+                new COORDINATOR(PORT, MAX_PROC_COUNT).start();
+            } 
+        } else {
+                new PROCESS(HOST, PORT, NEIGHBOUR_LIST).start();
+            
         }
-        
-        
+
     }
-    
     
 }
 
@@ -90,10 +86,10 @@ class COORDINATOR {
 
     private static ServerSocket coordinatorSocket = null;
     private static Socket processSocket = null;
-    private static int MAX_PROC_COUNT;
-    private static int PROC_INDEX = 0;
-    private ArrayList<processThreadHandler> PROC_THREADS = new ArrayList<>();
+    private int MAX_PROC_COUNT;
+    private static int PROC_INDEX = 1;
     
+    private Map<Socket, Integer> PROCESS_IDS = new HashMap<>();
     
     private int PORT = 1234;
     /*
@@ -105,16 +101,18 @@ class COORDINATOR {
         this.MAX_PROC_COUNT = MAX_PROC_COUNT;
     }
     
+
     public void start() {
     
         try {
             coordinatorSocket = new ServerSocket(PORT);
+            coordinatorSocket.setReuseAddress(true);
         } catch (IOException ex) {
             Logger.getLogger(COORDINATOR.class.getName()).log(Level.SEVERE, null, ex);
         }
         
         System.out.println("COORDINATOR started at <"+coordinatorSocket.getLocalSocketAddress()+">.");
-        
+
         //Continously accept new connections form individual clients.
         //Pass every accepted socket into a handler thread.
         //Every passed socket then can communicate separately with the Server (Coordinator).
@@ -122,14 +120,14 @@ class COORDINATOR {
             
             try {
                 processSocket = coordinatorSocket.accept();
-                PROC_THREADS.add(new processThreadHandler(processSocket,PROC_THREADS));
-                PROC_THREADS.get(PROC_INDEX).init();
-                
+                PROCESS_IDS.put(processSocket, PROC_INDEX);
+                new processThreadHandler(processSocket,PROCESS_IDS).start();
+                PROC_INDEX++;
                 if (PROC_INDEX == MAX_PROC_COUNT) {
                     PrintStream outStream = new PrintStream(processSocket.getOutputStream());
                     outStream.println("Reached MAX limit of Processes.");
                     outStream.close();
-                    coordinatorSocket.close();
+                    //coordinatorSocket.close();
                 }
             } catch (IOException ex) {
                 Logger.getLogger(COORDINATOR.class.getName()).log(Level.SEVERE, null, ex);
@@ -142,39 +140,40 @@ class COORDINATOR {
 
 class processThreadHandler extends Thread {
     private DataInputStream inStream = null;
-    private BufferedReader keyInput = null;
-    private PrintStream outStream = null;
     private Socket processSocket = null;
-    private ArrayList<processThreadHandler> PROC_THREADS;
-    private int MAX_PROC_COUNT = 1;
+    private PrintStream outStream = null;
+    private Map<Socket,Integer> PROCESS_IDS;
   
-    public processThreadHandler(Socket processSocket,ArrayList<processThreadHandler> PROC_THREADS) {
+    public processThreadHandler(Socket processSocket, Map<Socket, Integer> PROCESS_IDS) {
         this.processSocket = processSocket;
-        this.PROC_THREADS = PROC_THREADS;
-        this.MAX_PROC_COUNT = PROC_THREADS.size();
+        this.PROCESS_IDS = PROCESS_IDS;
     }
-    public processThreadHandler() {}
     
-    public void init() {
+    @Override
+    public void run() {
         
         try {
             inStream = new DataInputStream(processSocket.getInputStream());
+            outStream = new PrintStream(processSocket.getOutputStream());
             System.out.println("@PROCESS<"+processSocket.getRemoteSocketAddress()+"> has joined.");
             
-            for(int i=0;i<MAX_PROC_COUNT;i++){
-                System.out.println("["+(i+1)+"]"+" PROCESS<"+PROC_THREADS.get(i).toString()+">");
-            }
-            String line;
+            String sendMsg, recvMsg;
             while(true) {
-                line = inStream.readLine();
-                System.out.println("@PROCESS<"+processSocket.getRemoteSocketAddress()+">::"+line);
-                new Thread(new processThreadHandler()).run();
-                if (line.equalsIgnoreCase("q")) {
+                recvMsg = inStream.readLine();
+                System.out.println("@PROCESS<"+processSocket.getRemoteSocketAddress()+">::"+recvMsg);
+                
+                if(recvMsg.equalsIgnoreCase("SEND")) {
+                    sendMsg = "RECV";
+                    System.out.println("@COORDINATOR::"+sendMsg);
+                    outStream.println(sendMsg);
+                }
+                if (recvMsg.equalsIgnoreCase("ACK")) {
                     break;
                 }
             }
             inStream.close();
-            processSocket.close();
+            outStream.close();
+            //processSocket.close();
             
         } catch (IOException ex) {
             Logger.getLogger(processThreadHandler.class.getName()).log(Level.SEVERE, null, ex);
@@ -182,113 +181,59 @@ class processThreadHandler extends Thread {
     
     }
     
-    @Override
-    public void run() {
     
-        
-        try {
-
-            outStream = new PrintStream(processSocket.getOutputStream());
-            keyInput = new BufferedReader(new InputStreamReader(System.in));
-            String line;
-            while(true) {
-                System.out.println("@COORDINATOR::");
-                line = keyInput.readLine();
-                outStream.println(line);
-                if (line.equalsIgnoreCase("q")) {
-                    break;
-                }
-            }
-            
-            /*
-             * Cleaning up, to close current sockets and open streams.
-             */
-            outStream.close();
-            keyInput.close();
-            processSocket.close();
-            
-        } catch (IOException e) {
-            Logger.getLogger(processThreadHandler.class.getName()).log(Level.SEVERE, null, e);
-        }
-        
-    }
 }
+
 
 class PROCESS extends Thread {
 
-    private static Socket processSocket = null;
-    private static PrintStream outStream = null;
-    private static DataInputStream inStream = null;
-    private static BufferedReader keyInput = null;
-
+    private Socket processSocket = null;
+    private PrintStream outStream = null;
+    private DataInputStream inStream = null;
+    private Map<Integer,Integer[]> NEIGHBOUR_LIST;
+    private final int PORT;
+    private final String HOST;
     
-    /*
-     * Default values of PORT and HOST.
-     */
-    private int PORT = 1234;
-    private String HOST = "localhost";
-    
-    public PROCESS(String HOST, int PORT) {
+    public PROCESS(String HOST, int PORT, Map<Integer,Integer[]> NEIGHBOUR_LIST) {
         this.HOST = HOST;
         this.PORT = PORT;
+        this.NEIGHBOUR_LIST = NEIGHBOUR_LIST;
     }
     
-    public PROCESS() {}
-    
-    public void init() {
+    @Override
+    public void run() {
     
         try {
             processSocket = new Socket(HOST,PORT);
-            keyInput = new BufferedReader(new InputStreamReader(System.in));
+            inStream = new DataInputStream(processSocket.getInputStream());
             outStream = new PrintStream(processSocket.getOutputStream());
             System.out.println("@PROCESS<"+processSocket.getLocalSocketAddress()+"> has joined <"+HOST+"> on ["+PORT+"].");
-            String line;
+            String sendMsg, recvMsg;
+
             while(true) {
-                System.out.println("@PROCESS<"+processSocket.getLocalSocketAddress()+">::");
-                line = keyInput.readLine();
-                outStream.println(line);
-                System.out.println("before starting listener thread");
-                new Thread(new PROCESS()).run();
-                System.out.println("after listener thread");
-                if(line.equalsIgnoreCase("q")) {
+                sendMsg = "SEND";
+                System.out.println("@PROCESS<"+processSocket.getLocalSocketAddress()+">::"+sendMsg);
+                outStream.println(sendMsg);
+                recvMsg = inStream.readLine();
+                System.out.println("@COORDINATOR::"+recvMsg);
+                if(recvMsg.equalsIgnoreCase("RECV")) {
+                    sendMsg = "ACK";
+                    outStream.println(sendMsg);
                     break;
                 }
             }
             
             outStream.close();
-            keyInput.close();
-            processSocket.close();
-            
-        } catch (IOException ex) {
-            Logger.getLogger(PROCESS.class.getName()).log(Level.SEVERE, null, ex);
-        }
-        
-    
-    }
-    
-    @Override
-    public void run() {
-        try {
-
-            
-            inStream = new DataInputStream(processSocket.getInputStream());
-            String line;
-            while(true) {
-                line = inStream.readLine();
-                System.out.println("@COORDINATOR::"+line);
-                if (line.equalsIgnoreCase("q")) {
-                    break;
-                }
-            }
-            
             inStream.close();
-            processSocket.close();
+            //processSocket.close();
             
         } catch (IOException ex) {
             Logger.getLogger(PROCESS.class.getName()).log(Level.SEVERE, null, ex);
         }
         
-       
+    
     }
+    
 
 }
+
