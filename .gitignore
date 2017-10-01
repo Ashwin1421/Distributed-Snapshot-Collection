@@ -1,10 +1,29 @@
+#class files
 *.class
+
+#build dir
 build
+
+#dist dir
 dist
+
+#NetBeans dir
 nbproject
+
+#test dir
 test
+
+#other files
 .classpath
 .project
 .build.xml
 manifest.mf
 .gitignore
+
+#local output
+localstate_1
+localstate_2
+localstate_3
+localstate_4
+localstate_5
+
