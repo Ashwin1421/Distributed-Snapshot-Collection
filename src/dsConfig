@@ -1,10 +1,9 @@
-COORDINATOR localhost
-NUMBER OF PROCESSES 5
-INTERVAL 10
-TERMINATE 100
+COORDINATOR <hostname>
+NUMBER OF PROCESSES <max number>
+INTERVAL <logical time interval to run snapshot collection algorithm>
+TERMINATE <logical time to terminate the program>
 NEIGHBOUR LIST
-1 2 3 5
-2 1 5 3
-3 1 2 4
-4 5 3
-5 1 2 4
+<pid> <list of neighbor pids>
+<pid> <list of neighbor pids>
+<pid> <list of neighbor pids>
+<pid> <list of neighbor pids>
